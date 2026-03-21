@@ -17,12 +17,52 @@ from docx.oxml.ns import qn, nsdecls
 from docx.oxml import parse_xml
 from lxml import etree
 
+import re
+
 from benefit_data import (
     generate_benefit_table,
     simulate_withdrawal,
     format_usd,
     BASE_TOTAL_SURRENDER,
 )
+
+
+def _parse_child_info(needs_text: str):
+    """从核心需求文本中解析孩子当前年龄和目标提取年龄。
+    例如：'儿子现在3岁，从19岁开始提取' → (3, 19)
+    返回 (child_current_age, target_withdraw_age) 或 (None, None)
+    """
+    child_age = None
+    target_age = None
+
+    # 匹配孩子当前年龄: "儿子/女儿/孩子 现在/今年 X岁"
+    m = re.search(r'(?:儿子|女儿|孩子|小孩).*?(?:现在|今年|目前).*?(\d+)\s*岁', needs_text)
+    if m:
+        child_age = int(m.group(1))
+
+    # 匹配目标提取年龄: "从X岁开始提取" 或 "X岁时候开始提取" 或 "X岁开始"
+    m2 = re.search(r'(?:从|在).*?(\d+)\s*岁.*?(?:开始|时候|时)?.*?提取', needs_text)
+    if m2:
+        target_age = int(m2.group(1))
+
+    return child_age, target_age
+
+
+def _detect_primary_need(needs_lower: str):
+    """检测客户核心需求的主要类别。返回字符串标识。
+    优先级：教育 > 传承 > 资产隔离 > 储蓄增值 > 退休 > general
+    """
+    if any(kw in needs_lower for kw in ["教育", "子女", "孩子", "留学", "学费"]):
+        return "education"
+    if any(kw in needs_lower for kw in ["传承", "遗产", "继承", "家族"]):
+        return "inheritance"
+    if any(kw in needs_lower for kw in ["资产隔离", "婚前", "离婚", "保全", "债务"]):
+        return "asset_isolation"
+    if any(kw in needs_lower for kw in ["储蓄", "增值", "理财", "投资"]):
+        return "growth"
+    if any(kw in needs_lower for kw in ["退休", "养老", "退休金"]):
+        return "retirement"
+    return "general"
 
 # ============================================================
 # 品牌色系常量
@@ -252,6 +292,18 @@ def generate_proposal(
     else:
         retirement_year = None
 
+    # 检测核心需求类别和子女信息
+    needs_lower_early = client_needs.lower() if client_needs else ""
+    primary_need = _detect_primary_need(needs_lower_early)
+    child_current_age, child_target_age = _parse_child_info(client_needs or "")
+
+    # 教育金提取年份（保单年度）
+    education_withdrawal_year = None
+    if primary_need == "education" and child_current_age is not None and child_target_age is not None:
+        education_withdrawal_year = child_target_age - child_current_age
+        if education_withdrawal_year < 1:
+            education_withdrawal_year = None
+
     # ============================================================
     # 模块 1：封面页
     # ============================================================
@@ -389,22 +441,36 @@ def generate_proposal(
 
     needs_lower = client_needs.lower() if client_needs else ""
 
-    # --- 动态开头段落 ---
-    if retirement_year:
+    # --- 动态开头段落（优先按核心需求关键词，退休作为兜底） ---
+    if primary_need == "education":
+        child_info = f"作为{client_family}的家长，" if client_family else ""
+        if child_current_age is not None and child_target_age is not None:
+            years_until = child_target_age - child_current_age
+            _add_body(doc, "", runs=[
+                {"text": f"{child_info}{client_name}深知教育投资对下一代的重要性。孩子目前{child_current_age}岁，距离{child_target_age}岁的关键教育节点还有"},
+                {"text": f"整整{years_until}年", "bold": True},
+                {"text": "。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。"},
+            ])
+        else:
+            _add_body(doc, f"{child_info}{client_name}深知教育投资对下一代的重要性。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。")
+    elif primary_need == "inheritance":
+        _add_body(doc, f"财富的意义不仅在于当下的享有，更在于跨代的传递。{client_name}正处于事业与家庭的成熟期，此时开始规划财富传承，既有充裕的时间让资产增值，也能从容安排分配方案，确保财富按照您的心意惠及后代。")
+    elif primary_need == "asset_isolation":
+        _add_body(doc, f"在当前复杂的经济与法律环境下，个人资产的安全性不容忽视。{client_name}希望通过合理的金融工具实现资产隔离与保全，这是极具前瞻性的财务决策。香港保险作为境外合法金融资产，在资产保全方面具有独特的制度优势。")
+    elif primary_need == "growth":
+        _add_body(doc, f"在全球低利率与通胀并存的环境下，{client_name}正在寻找一种兼具安全性与增长性的储蓄方式。传统银行存款收益持续走低，而股市波动又让人难以安心。如何让辛苦积累的财富稳健增值，是当下最迫切的命题。")
+    elif primary_need == "retirement" and retirement_year:
         _add_body(doc, "", runs=[
             {"text": f"{client_age}岁到{retirement_age}岁，这是{client_name}规划退休的"},
             {"text": f"黄金窗口期——整整{retirement_year}年", "bold": True},
             {"text": "。在这段时间里，收入处于职业生涯的高峰，储蓄能力最强；而足够的时间也能让一笔合理的投入通过复利实现显著增值。"},
         ])
-    elif any(kw in needs_lower for kw in ["教育", "子女", "孩子", "留学"]):
-        child_info = f"作为{client_family}的家长，" if client_family else ""
-        _add_body(doc, f"{child_info}{client_name}深知教育投资对下一代的重要性。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。")
-    elif any(kw in needs_lower for kw in ["传承", "遗产", "继承", "家族"]):
-        _add_body(doc, f"财富的意义不仅在于当下的享有，更在于跨代的传递。{client_name}正处于事业与家庭的成熟期，此时开始规划财富传承，既有充裕的时间让资产增值，也能从容安排分配方案，确保财富按照您的心意惠及后代。")
-    elif any(kw in needs_lower for kw in ["资产隔离", "婚前", "离婚", "保全", "债务"]):
-        _add_body(doc, f"在当前复杂的经济与法律环境下，个人资产的安全性不容忽视。{client_name}希望通过合理的金融工具实现资产隔离与保全，这是极具前瞻性的财务决策。香港保险作为境外合法金融资产，在资产保全方面具有独特的制度优势。")
-    elif any(kw in needs_lower for kw in ["储蓄", "增值", "理财", "投资"]):
-        _add_body(doc, f"在全球低利率与通胀并存的环境下，{client_name}正在寻找一种兼具安全性与增长性的储蓄方式。传统银行存款收益持续走低，而股市波动又让人难以安心。如何让辛苦积累的财富稳健增值，是当下最迫切的命题。")
+    elif retirement_year:
+        _add_body(doc, "", runs=[
+            {"text": f"{client_age}岁到{retirement_age}岁，这是{client_name}规划退休的"},
+            {"text": f"黄金窗口期——整整{retirement_year}年", "bold": True},
+            {"text": "。在这段时间里，收入处于职业生涯的高峰，储蓄能力最强；而足够的时间也能让一笔合理的投入通过复利实现显著增值。"},
+        ])
     else:
         _add_body(doc, f"基于对{client_name}个人情况的深入了解，我们对您当前的财务状况和未来规划需求进行了全面分析，以确保推荐的方案真正契合您的期望与目标。")
 
@@ -439,9 +505,12 @@ def generate_proposal(
     if any(kw in needs_lower for kw in ["储蓄", "增值", "理财", "投资", "收益"]):
         need_items.append(all_need_items["growth"])
 
-    # 如果有退休年龄但没有匹配到退休需求，自动添加
+    # 如果有退休年龄但没有匹配到退休需求，自动添加（但不在教育金为主需求时强制排第一）
     if retirement_year and not any(item == all_need_items["retirement"] for item in need_items):
-        need_items.insert(0, all_need_items["retirement"])
+        if primary_need == "education":
+            need_items.append(all_need_items["retirement"])  # 教育为主时，退休放后面
+        else:
+            need_items.insert(0, all_need_items["retirement"])
 
     # 所有场景都加「资产安全与增值平衡」作为兜底，除非已有3个以上
     if len(need_items) < 3 and all_need_items["safety"] not in need_items:
@@ -506,7 +575,14 @@ def generate_proposal(
         f"每年投入{format_usd(annual_premium)}美元，连续5年，总计{format_usd(total_premium)}美元。"
         f"完成缴费后无需再投入任何资金，保单将在友邦专业投资管理下持续增值。"
     )
-    if retirement_year:
+    if primary_need == "education" and education_withdrawal_year and education_withdrawal_year in BASE_TOTAL_SURRENDER:
+        edu_total = round(BASE_TOTAL_SURRENDER[education_withdrawal_year] * scale)
+        edu_ratio = round(edu_total / total_premium, 2)
+        overview_text += (
+            f"到孩子{child_target_age}岁时（第{education_withdrawal_year}年），预期总价值约{format_usd(edu_total)}美元，"
+            f"约为初始投入的{edu_ratio}倍，届时可开始提取教育金。"
+        )
+    elif retirement_year:
         ret_total = round(BASE_TOTAL_SURRENDER[retirement_year] * scale)
         ret_ratio = round(ret_total / total_premium, 2)
         withdrawal_amt = round(ret_total * 0.065)
@@ -529,6 +605,9 @@ def generate_proposal(
 
     # 确定关键年份
     key_years = [10, 20, 30, 40, 50, 100]
+    if primary_need == "education" and education_withdrawal_year and education_withdrawal_year not in key_years:
+        key_years.append(education_withdrawal_year)
+        key_years.sort()
     if retirement_year and retirement_year not in key_years:
         key_years.append(retirement_year)
         key_years.sort()
@@ -549,7 +628,9 @@ def generate_proposal(
         fill = COLORS["ROW_ALT_1"] if row_idx % 2 == 0 else COLORS["ROW_ALT_2"]
         is_bold = row_idx % 2 == 0
         year_label = f"第{row_data['year']}年"
-        if retirement_year and row_data['year'] == retirement_year:
+        if primary_need == "education" and education_withdrawal_year and row_data['year'] == education_withdrawal_year:
+            year_label += f"\n(孩子{child_target_age}岁)"
+        elif retirement_year and row_data['year'] == retirement_year:
             year_label += f"\n({retirement_age}岁)"
 
         _create_data_cell(table, row_idx + 1, 0, year_label, col_w, fill, bold=is_bold, align="center")
@@ -575,21 +656,45 @@ def generate_proposal(
     _add_page_break(doc)
 
     # ============================================================
-    # 模块 7：退休/提取演示
+    # 模块 7：提取演示（根据核心需求选择教育金/退休提取）
     # ============================================================
-    if retirement_year:
-        _add_heading(doc, "退休提取演示")
+    # 确定提取起始年份和场景
+    withdrawal_start_year = None
+    withdrawal_scenario = None  # "education" or "retirement"
 
-        withdrawal_result = simulate_withdrawal(annual_premium, retirement_year)
+    if primary_need == "education" and education_withdrawal_year:
+        withdrawal_start_year = education_withdrawal_year
+        withdrawal_scenario = "education"
+    elif retirement_year:
+        withdrawal_start_year = retirement_year
+        withdrawal_scenario = "retirement"
+
+    if withdrawal_start_year:
+        if withdrawal_scenario == "education":
+            _add_heading(doc, "教育金提取演示")
+        else:
+            _add_heading(doc, "退休提取演示")
+
+        withdrawal_result = simulate_withdrawal(annual_premium, withdrawal_start_year)
         annual_w = withdrawal_result["annual_withdrawal"]
 
-        _add_body(doc, "", runs=[
-            {"text": f"基于您{retirement_age}岁退休的目标，我们按照"},
-            {"text": f"第{retirement_year}年预期总价值 × 6.5%", "bold": True},
-            {"text": f"的方式确定年提取金额，从第{retirement_year}年起每年固定提取"},
-            {"text": f"${format_usd(annual_w)}美元", "bold": True},
-            {"text": "，以下是提取后保单剩余价值的模拟："},
-        ])
+        if withdrawal_scenario == "education":
+            child_age_at_withdraw = child_target_age
+            _add_body(doc, "", runs=[
+                {"text": f"基于孩子{child_age_at_withdraw}岁开始提取教育金的目标，我们按照"},
+                {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
+                {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
+                {"text": f"${format_usd(annual_w)}美元", "bold": True},
+                {"text": "，以下是提取后保单剩余价值的模拟："},
+            ])
+        else:
+            _add_body(doc, "", runs=[
+                {"text": f"基于您{retirement_age}岁退休的目标，我们按照"},
+                {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
+                {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
+                {"text": f"${format_usd(annual_w)}美元", "bold": True},
+                {"text": "，以下是提取后保单剩余价值的模拟："},
+            ])
 
         _add_body(doc, "单位：美元（基于预期投资回报率演示，非保证）", runs=[
             {"text": "单位：美元（基于预期投资回报率演示，非保证）", "italic": True, "size": 10},
@@ -598,7 +703,7 @@ def generate_proposal(
         # 选择展示的关键年份
         all_proj = withdrawal_result["projections"]
         show_years_set = set()
-        show_years_set.add(retirement_year)  # 起始年
+        show_years_set.add(withdrawal_start_year)  # 起始年
         # 每隔5年/10年选一些
         for p in all_proj:
             y = p["year"]
@@ -610,8 +715,7 @@ def generate_proposal(
 
         # 限制展示行数 (最多 ~12行)
         if len(show_years) > 12:
-            # 保留首尾和等间距
-            essential = [retirement_year, 100]
+            essential = [withdrawal_start_year, 100]
             remaining = [y for y in show_years if y not in essential]
             step = max(1, len(remaining) // 10)
             selected = remaining[::step]
@@ -638,19 +742,30 @@ def generate_proposal(
             _create_data_cell(w_table, row_idx + 1, 3, format_usd(balance), w_col, fill, bold=(row_idx == 0))
 
         # 计算累计提取
-        total_withdrawn = annual_w * (100 - retirement_year + 1)
+        total_withdrawn = annual_w * (100 - withdrawal_start_year + 1)
         year100_balance = proj_dict.get(100, 0)
         total_withdrawn_ratio = round(total_withdrawn / total_premium, 1)
 
-        _add_body(doc, "", runs=[
-            {"text": f"模拟数据显示，从{retirement_age}岁开始每年固定提取${format_usd(annual_w)}美元，"},
-            {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
-            {"text": f"。到第100年，剩余价值仍高达"},
-            {"text": f"${format_usd(year100_balance)}美元", "bold": True},
-            {"text": f"。期间累计提取总额达"},
-            {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
-            {"text": "，真正实现了「取之不尽」的终身现金流。"},
-        ], space_after=9)
+        if withdrawal_scenario == "education":
+            _add_body(doc, "", runs=[
+                {"text": f"模拟数据显示，从孩子{child_target_age}岁（第{withdrawal_start_year}年）起每年固定提取${format_usd(annual_w)}美元用于教育支出，"},
+                {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
+                {"text": f"。到第100年，剩余价值仍高达"},
+                {"text": f"${format_usd(year100_balance)}美元", "bold": True},
+                {"text": f"。期间累计提取总额达"},
+                {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
+                {"text": "，教育金提取完毕后，保单仍可继续作为退休储备或财富传承工具。"},
+            ], space_after=9)
+        else:
+            _add_body(doc, "", runs=[
+                {"text": f"模拟数据显示，从{retirement_age}岁开始每年固定提取${format_usd(annual_w)}美元，"},
+                {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
+                {"text": f"。到第100年，剩余价值仍高达"},
+                {"text": f"${format_usd(year100_balance)}美元", "bold": True},
+                {"text": f"。期间累计提取总额达"},
+                {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
+                {"text": "，真正实现了「取之不尽」的终身现金流。"},
+            ], space_after=9)
 
         _add_body(doc, "", runs=[
             {"text": "灵活调节的空间：", "bold": True},

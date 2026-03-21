@@ -383,32 +383,104 @@ def generate_proposal(
     _add_body(doc, bg_text, space_after=12)
 
     # ============================================================
-    # 模块 4：需求分析
+    # 模块 4：需求分析（根据客户核心需求动态生成）
     # ============================================================
     _add_heading(doc, "需求分析")
 
+    needs_lower = client_needs.lower() if client_needs else ""
+
+    # --- 动态开头段落 ---
     if retirement_year:
         _add_body(doc, "", runs=[
             {"text": f"{client_age}岁到{retirement_age}岁，这是{client_name}规划退休的"},
             {"text": f"黄金窗口期——整整{retirement_year}年", "bold": True},
             {"text": "。在这段时间里，收入处于职业生涯的高峰，储蓄能力最强；而足够的时间也能让一笔合理的投入通过复利实现显著增值。"},
         ])
+    elif any(kw in needs_lower for kw in ["教育", "子女", "孩子", "留学"]):
+        child_info = f"作为{client_family}的家长，" if client_family else ""
+        _add_body(doc, f"{child_info}{client_name}深知教育投资对下一代的重要性。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。")
+    elif any(kw in needs_lower for kw in ["传承", "遗产", "继承", "家族"]):
+        _add_body(doc, f"财富的意义不仅在于当下的享有，更在于跨代的传递。{client_name}正处于事业与家庭的成熟期，此时开始规划财富传承，既有充裕的时间让资产增值，也能从容安排分配方案，确保财富按照您的心意惠及后代。")
+    elif any(kw in needs_lower for kw in ["资产隔离", "婚前", "离婚", "保全", "债务"]):
+        _add_body(doc, f"在当前复杂的经济与法律环境下，个人资产的安全性不容忽视。{client_name}希望通过合理的金融工具实现资产隔离与保全，这是极具前瞻性的财务决策。香港保险作为境外合法金融资产，在资产保全方面具有独特的制度优势。")
+    elif any(kw in needs_lower for kw in ["储蓄", "增值", "理财", "投资"]):
+        _add_body(doc, f"在全球低利率与通胀并存的环境下，{client_name}正在寻找一种兼具安全性与增长性的储蓄方式。传统银行存款收益持续走低，而股市波动又让人难以安心。如何让辛苦积累的财富稳健增值，是当下最迫切的命题。")
+    else:
+        _add_body(doc, f"基于对{client_name}个人情况的深入了解，我们对您当前的财务状况和未来规划需求进行了全面分析，以确保推荐的方案真正契合您的期望与目标。")
 
     _add_body(doc, "", runs=[
         {"text": "我们为您识别了以下核心规划要点：", "bold": True},
     ])
 
-    # 需求要点
-    need_items = [
-        ("退休收入缺口：", "按照当前生活水准，退休后需要持续稳定的现金流维持品质生活。社保养老金远不足以覆盖这一需求，需要通过个人储蓄和投资来填补缺口。"),
-        ("资产币种单一风险：", "收入和积蓄均以人民币计价，缺乏外币资产配置。在全球经济不确定性增大的背景下，持有美元资产是分散风险的专业选择。"),
-        ("资产安全与增值平衡：", "财务规划需要兼顾安全性与增长性——既不能过于激进承受不必要的风险，也不能过于保守让通胀侵蚀购买力。"),
-    ]
+    # --- 根据客户核心需求动态匹配要点 ---
+    # 预定义所有可能的需求要点
+    all_need_items = {
+        "retirement": ("退休收入保障：", f"按照当前生活水准，退休后需要持续稳定的现金流维持品质生活。社保养老金覆盖范围有限，尤其对于高收入人群而言，仅靠社保远不足以维持退休前的生活品质，需要通过个人储蓄和投资来填补缺口。"),
+        "education": ("子女教育金规划：", "优质教育是给孩子最好的投资，但国际学校、海外留学的费用逐年递增。提前以美元配置教育储备金，既能对冲人民币贬值风险，又能通过长期复利让教育基金在需要时已充分增值，从容应对未来的学费支出。"),
+        "inheritance": ("财富传承规划：", "财富传承不仅是金额的传递，更是对家人的责任安排。通过保险工具实现跨代财富转移，可以灵活设定受益人、借助保单分拆功能按需分配，且在法律层面具有明确的权属保障，避免未来可能的继承纠纷。"),
+        "asset_isolation": ("资产隔离与保全：", "在商业经营或婚姻关系中，个人资产可能面临潜在的法律风险。香港保单作为境外合法金融资产，在资产保全方面具有独特的制度安排，能够有效实现个人财富与经营风险、婚姻风险的合理隔离。"),
+        "currency": ("资产币种多元化：", "收入和积蓄以人民币计价为主，缺乏外币资产配置。在全球经济不确定性增大、汇率波动加剧的背景下，配置美元资产是分散单一货币风险的专业选择，也是全球高净值人群的标准做法。"),
+        "growth": ("资产稳健增值：", "在银行存款利率持续下行的环境中，传统储蓄方式的实际购买力正被通胀悄然侵蚀。选择一种既有保底保障又能分享长期投资收益的工具，是让财富跑赢通胀、实现稳健增值的关键。"),
+        "safety": ("资产安全与增值平衡：", "财务规划需要兼顾安全性与增长性——既不能过于激进承受不必要的风险，也不能过于保守让通胀侵蚀购买力。友邦以七成固定收益加三成增长型资产的配置策略，在安全与收益间取得了最佳平衡。"),
+    }
+
+    # 根据 client_needs 关键词匹配
+    need_items = []
+    if any(kw in needs_lower for kw in ["退休", "养老", "退休金"]):
+        need_items.append(all_need_items["retirement"])
+    if any(kw in needs_lower for kw in ["教育", "子女", "孩子", "留学", "学费"]):
+        need_items.append(all_need_items["education"])
+    if any(kw in needs_lower for kw in ["传承", "遗产", "继承", "家族", "下一代"]):
+        need_items.append(all_need_items["inheritance"])
+    if any(kw in needs_lower for kw in ["资产隔离", "婚前", "离婚", "保全", "债务", "隔离"]):
+        need_items.append(all_need_items["asset_isolation"])
+    if any(kw in needs_lower for kw in ["货币", "汇率", "美元", "外币", "人民币"]):
+        need_items.append(all_need_items["currency"])
+    if any(kw in needs_lower for kw in ["储蓄", "增值", "理财", "投资", "收益"]):
+        need_items.append(all_need_items["growth"])
+
+    # 如果有退休年龄但没有匹配到退休需求，自动添加
+    if retirement_year and not any(item == all_need_items["retirement"] for item in need_items):
+        need_items.insert(0, all_need_items["retirement"])
+
+    # 所有场景都加「资产安全与增值平衡」作为兜底，除非已有3个以上
+    if len(need_items) < 3 and all_need_items["safety"] not in need_items:
+        need_items.append(all_need_items["safety"])
+
+    # 如果需求要点少于2个，补充「资产币种多元化」
+    if len(need_items) < 2 and all_need_items["currency"] not in need_items:
+        need_items.insert(0, all_need_items["currency"])
+
+    # 兜底：如果完全没有匹配，给出默认3条
+    if not need_items:
+        need_items = [
+            all_need_items["currency"],
+            all_need_items["growth"],
+            all_need_items["safety"],
+        ]
+
     for i, (prefix, body) in enumerate(need_items):
         sa = 12 if i == len(need_items) - 1 else None
         _add_numbered_item(doc, body, bold_prefix=f"{i+1}. {prefix}", space_after=sa)
 
-    _add_body(doc, "基于以上分析，我们为您推荐友邦保险最新一代储蓄计划——环宇盈活储蓄保险计划。它的设计理念与您的需求高度吻合：美元计价对冲货币风险、长期复利稳健增值、灵活提取匹配退休节奏、保单分拆和传承功能为未来预留充分弹性。", space_after=12)
+    # --- 动态衔接语 ---
+    matched_advantages = []
+    if any(kw in needs_lower for kw in ["退休", "养老"]):
+        matched_advantages.append("灵活提取匹配退休节奏")
+    if any(kw in needs_lower for kw in ["教育", "子女", "留学"]):
+        matched_advantages.append("灵活提取覆盖各阶段教育支出")
+    if any(kw in needs_lower for kw in ["传承", "遗产", "家族"]):
+        matched_advantages.append("保单分拆和传承功能实现跨代财富转移")
+    if any(kw in needs_lower for kw in ["资产隔离", "保全"]):
+        matched_advantages.append("境外保单提供资产保全制度优势")
+    # 默认优势
+    base_advantages = "美元计价对冲货币风险、长期复利稳健增值"
+    if matched_advantages:
+        full_advantages = base_advantages + "、" + "、".join(matched_advantages)
+    else:
+        full_advantages = base_advantages + "、灵活提取匹配人生节奏、保单分拆和传承功能为未来预留充分弹性"
+
+    _add_body(doc, f"基于以上分析，我们为您推荐友邦保险最新一代储蓄计划——环宇盈活储蓄保险计划。它的设计理念与您的需求高度吻合：{full_advantages}。", space_after=12)
 
     _add_page_break(doc)
 

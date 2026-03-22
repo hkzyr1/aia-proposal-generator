@@ -135,11 +135,11 @@ def main():
                 step=5000,
             )
             retirement_age = st.number_input(
-                "目标退休年龄",
+                "预期提取年龄",
                 min_value=0,
                 max_value=100,
                 value=0,
-                help="填 0 表示不设定退休目标",
+                help="填 0 表示不设定提取目标",
             )
 
         client_needs = st.text_area(
@@ -204,8 +204,8 @@ def main():
                     scale = annual_premium / 10000
                     ret_value = round(BASE_TOTAL_SURRENDER[ret_year] * scale)
                     withdrawal = round(ret_value * 0.065)
-                    col1.metric("退休年龄", f"{ret_age}岁（第{ret_year}年）")
-                    col2.metric("退休时预期总价值", f"${format_usd(ret_value)}")
+                    col1.metric("预期提取年龄", f"{ret_age}岁（第{ret_year}年）")
+                    col2.metric("提取时预期总价值", f"${format_usd(ret_value)}")
                     col3.metric("年提取金额", f"${format_usd(withdrawal)}")
 
                 # 下载按钮

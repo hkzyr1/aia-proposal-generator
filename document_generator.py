@@ -670,31 +670,33 @@ def generate_proposal(
         withdrawal_scenario = "retirement"
 
     if withdrawal_start_year:
-        if withdrawal_scenario == "education":
-            _add_heading(doc, "教育金提取演示")
-        else:
-            _add_heading(doc, "退休提取演示")
+        _add_heading(doc, "提取演示")
 
         withdrawal_result = simulate_withdrawal(annual_premium, withdrawal_start_year)
         annual_w = withdrawal_result["annual_withdrawal"]
 
+        # 根据核心需求 + 提取年龄动态生成描述
         if withdrawal_scenario == "education":
-            child_age_at_withdraw = child_target_age
-            _add_body(doc, "", runs=[
-                {"text": f"基于孩子{child_age_at_withdraw}岁开始提取教育金的目标，我们按照"},
-                {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
-                {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
-                {"text": f"${format_usd(annual_w)}美元", "bold": True},
-                {"text": "，以下是提取后保单剩余价值的模拟："},
-            ])
+            if child_current_age is not None and child_target_age is not None:
+                goal_text = f"为孩子储备教育金、并在孩子{child_target_age}岁时（您{client_age + withdrawal_start_year}岁）开始提取"
+            else:
+                goal_text = f"为子女储备教育金、并在您{client_age + withdrawal_start_year}岁时开始提取"
+        elif primary_need == "inheritance":
+            goal_text = f"实现财富传承规划、并在您{client_age + withdrawal_start_year}岁时开始提取"
+        elif primary_need == "asset_isolation":
+            goal_text = f"实现资产保全与增值、并在您{client_age + withdrawal_start_year}岁时开始提取"
+        elif primary_need == "growth":
+            goal_text = f"实现资产稳健增值、并在您{client_age + withdrawal_start_year}岁时开始提取"
         else:
-            _add_body(doc, "", runs=[
-                {"text": f"基于您{retirement_age}岁退休的目标，我们按照"},
-                {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
-                {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
-                {"text": f"${format_usd(annual_w)}美元", "bold": True},
-                {"text": "，以下是提取后保单剩余价值的模拟："},
-            ])
+            goal_text = f"在您{client_age + withdrawal_start_year}岁时开始提取"
+
+        _add_body(doc, "", runs=[
+            {"text": f"基于您{goal_text}的目标，我们按照"},
+            {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
+            {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
+            {"text": f"${format_usd(annual_w)}美元", "bold": True},
+            {"text": "，以下是提取后保单剩余价值的模拟："},
+        ])
 
         _add_body(doc, "单位：美元（基于预期投资回报率演示，非保证）", runs=[
             {"text": "单位：美元（基于预期投资回报率演示，非保证）", "italic": True, "size": 10},
@@ -746,26 +748,23 @@ def generate_proposal(
         year100_balance = proj_dict.get(100, 0)
         total_withdrawn_ratio = round(total_withdrawn / total_premium, 1)
 
-        if withdrawal_scenario == "education":
-            _add_body(doc, "", runs=[
-                {"text": f"模拟数据显示，从孩子{child_target_age}岁（第{withdrawal_start_year}年）起每年固定提取${format_usd(annual_w)}美元用于教育支出，"},
-                {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
-                {"text": f"。到第100年，剩余价值仍高达"},
-                {"text": f"${format_usd(year100_balance)}美元", "bold": True},
-                {"text": f"。期间累计提取总额达"},
-                {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
-                {"text": "，教育金提取完毕后，保单仍可继续作为退休储备或财富传承工具。"},
-            ], space_after=9)
+        withdraw_age_label = client_age + withdrawal_start_year
+        if withdrawal_scenario == "education" and child_target_age is not None:
+            start_desc = f"从孩子{child_target_age}岁（您{withdraw_age_label}岁）起"
+            tail_text = "，教育金提取完毕后，保单仍可继续作为退休储备或财富传承工具。"
         else:
-            _add_body(doc, "", runs=[
-                {"text": f"模拟数据显示，从{retirement_age}岁开始每年固定提取${format_usd(annual_w)}美元，"},
-                {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
-                {"text": f"。到第100年，剩余价值仍高达"},
-                {"text": f"${format_usd(year100_balance)}美元", "bold": True},
-                {"text": f"。期间累计提取总额达"},
-                {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
-                {"text": "，真正实现了「取之不尽」的终身现金流。"},
-            ], space_after=9)
+            start_desc = f"从您{withdraw_age_label}岁起"
+            tail_text = "，真正实现了「取之不尽」的终身现金流。"
+
+        _add_body(doc, "", runs=[
+            {"text": f"模拟数据显示，{start_desc}每年固定提取${format_usd(annual_w)}美元，"},
+            {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
+            {"text": f"。到第100年，剩余价值仍高达"},
+            {"text": f"${format_usd(year100_balance)}美元", "bold": True},
+            {"text": f"。期间累计提取总额达"},
+            {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
+            {"text": tail_text},
+        ], space_after=9)
 
         _add_body(doc, "", runs=[
             {"text": "灵活调节的空间：", "bold": True},

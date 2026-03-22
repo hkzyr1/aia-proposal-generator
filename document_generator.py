@@ -6,6 +6,7 @@ AIA友邦储蓄险客户方案 — python-docx 文档生成器
 """
 
 import io
+import os
 from datetime import datetime
 
 from docx import Document
@@ -18,6 +19,16 @@ from docx.oxml import parse_xml
 from lxml import etree
 
 import re
+
+# 封面底图路径（可在 Streamlit 部署时通过环境变量覆盖）
+COVER_BG_PATH = os.environ.get(
+    "COVER_BG_PATH",
+    os.path.join(os.path.dirname(__file__), "cover_bg.png"),
+)
+INNER_BG_PATH = os.environ.get(
+    "INNER_BG_PATH",
+    os.path.join(os.path.dirname(__file__), "inner_bg.png"),
+)
 
 from benefit_data import (
     generate_benefit_table,
@@ -153,12 +164,14 @@ def _add_run(paragraph, text, bold=False, italic=False, size=12, color="333333",
     return run
 
 
-def _create_header_cell(table, row_idx, col_idx, text, width_dxa):
+def _create_header_cell(table, row_idx, col_idx, text, width_dxa, space_after=None):
     """创建表头单元格"""
     cell = table.cell(row_idx, col_idx)
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    if space_after is not None:
+        p.paragraph_format.space_after = space_after
     _add_run(p, text, bold=True, size=10, color="FFFFFF", font="Microsoft YaHei")
     _set_cell_shading(cell, COLORS["NAVY"])
     _set_cell_borders(cell, COLORS["BORDER"])
@@ -166,12 +179,14 @@ def _create_header_cell(table, row_idx, col_idx, text, width_dxa):
     _set_cell_width(cell, width_dxa)
 
 
-def _create_data_cell(table, row_idx, col_idx, text, width_dxa, fill_color, bold=False, align="right"):
+def _create_data_cell(table, row_idx, col_idx, text, width_dxa, fill_color, bold=False, align="right", space_after=None):
     """创建数据单元格"""
     cell = table.cell(row_idx, col_idx)
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if align == "right" else WD_ALIGN_PARAGRAPH.CENTER
+    if space_after is not None:
+        p.paragraph_format.space_after = space_after
     _add_run(p, text, bold=bold, size=10, font="Microsoft YaHei")
     _set_cell_shading(cell, fill_color)
     _set_cell_borders(cell, COLORS["BORDER"])
@@ -266,6 +281,65 @@ def _set_paragraph_borders(paragraph, color: str, size: int = 4, sides=None):
     pPr.append(pBdr)
 
 
+def _set_table_col_widths(table, col_widths):
+    """强制设置表格列宽：固定布局 + tblGrid + 单元格宽度。
+    col_widths: list of int (DXA), e.g. [170, 8856]
+    """
+    tbl = table._element
+    tblPr = tbl.tblPr
+
+    # 1) 固定布局（禁止自动调整）
+    layout = parse_xml(f'<w:tblLayout {nsdecls("w")} w:type="fixed"/>')
+    tblPr.append(layout)
+
+    # 2) 总宽度
+    total = sum(col_widths)
+    tblW = parse_xml(f'<w:tblW {nsdecls("w")} w:w="{total}" w:type="dxa"/>')
+    # 先移除已有的 tblW
+    existing_w = tblPr.find(qn('w:tblW'))
+    if existing_w is not None:
+        tblPr.remove(existing_w)
+    tblPr.append(tblW)
+
+    # 3) tblGrid 定义列宽
+    existing_grid = tbl.find(qn('w:tblGrid'))
+    if existing_grid is not None:
+        tbl.remove(existing_grid)
+    grid_xml = f'<w:tblGrid {nsdecls("w")}>'
+    for w in col_widths:
+        grid_xml += f'<w:gridCol w:w="{w}"/>'
+    grid_xml += '</w:tblGrid>'
+    grid = parse_xml(grid_xml)
+    tbl.insert(tbl.index(tblPr) + 1, grid)
+
+    # 4) 每行每列单元格宽度
+    for row in table.rows:
+        for idx, cell in enumerate(row.cells):
+            if idx < len(col_widths):
+                _set_cell_width(cell, col_widths[idx])
+
+
+def _remove_table_borders(table):
+    """移除表格所有边框"""
+    tbl = table._element
+    tblPr = tbl.tblPr
+    # 移除已有的 tblBorders
+    existing = tblPr.find(qn('w:tblBorders'))
+    if existing is not None:
+        tblPr.remove(existing)
+    tblBorders = parse_xml(
+        f'<w:tblBorders {nsdecls("w")}>'
+        f'  <w:top w:val="none"/>'
+        f'  <w:left w:val="none"/>'
+        f'  <w:bottom w:val="none"/>'
+        f'  <w:right w:val="none"/>'
+        f'  <w:insideH w:val="none"/>'
+        f'  <w:insideV w:val="none"/>'
+        f'</w:tblBorders>'
+    )
+    tblPr.append(tblBorders)
+
+
 def _add_gold_divider(doc, width_pct=40):
     """添加金色装饰分隔线"""
     p = doc.add_paragraph()
@@ -284,50 +358,65 @@ def _add_gold_divider(doc, width_pct=40):
 
 
 def _add_styled_heading(doc, text, level=1):
-    """添加带有深蓝底纹 + 左侧金色竖线的标题"""
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(16 if level == 1 else 12)
-    p.paragraph_format.space_after = Pt(8 if level == 1 else 6)
+    """添加带有金色左侧accent条的标题 - 使用全宽表格设计"""
+    # 创建1行2列表格：col1 (0.3cm gold) + col2 (navy background with text)
+    table = doc.add_table(rows=1, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # 左侧金色 accent bar
-    _set_paragraph_border_left(p, COLORS["GOLD"], size=28, space=10)
-    # 浅蓝底纹
-    _set_paragraph_shading(p, COLORS["NAVY_LIGHT"])
+    # 使用helper强制列宽和移除边框
+    _set_table_col_widths(table, [170, 8856])
+    _remove_table_borders(table)
 
-    # 设置段落内边距（通过缩进模拟左内边距）
-    pPr = p._element.get_or_add_pPr()
-    ind = parse_xml(f'<w:ind {nsdecls("w")} w:left="120" w:right="120"/>')
-    pPr.append(ind)
+    # col1: gold accent strip (0.3cm = 170 DXA)
+    cell_gold = table.cell(0, 0)
+    cell_gold.text = ""
+    _set_cell_shading(cell_gold, COLORS["GOLD"])
+    _set_cell_margins(cell_gold, top=40, bottom=40, left=0, right=0)
 
-    _add_run(p, f"  {text}", bold=True, size=15 if level == 1 else 13, color=COLORS["NAVY"])
-    return p
+    # col2: navy background with heading text (9026 - 170 = 8856 DXA)
+    cell_heading = table.cell(0, 1)
+    cell_heading.text = ""
+    _set_cell_shading(cell_heading, COLORS["NAVY"])
+    _set_cell_margins(cell_heading, top=60, bottom=60, left=100, right=100)
+
+    p = cell_heading.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _add_run(p, text, bold=True, size=15 if level == 1 else 13, color=COLORS["WHITE"])
+
+    # 添加间距
+    doc.paragraphs[-1].paragraph_format.space_after = Pt(8 if level == 1 else 6)
+    return table
 
 
 def _add_highlight_box(doc, text, runs=None, bg_color=None, border_color=None, left_accent=None):
-    """添加带背景底纹的高亮框段落（用于关键信息展示）"""
+    """添加高亮框 - 使用全宽表格设计：gold accent + content area"""
     if bg_color is None:
-        bg_color = COLORS["HIGHLIGHT_BG"]
-    if border_color is None:
-        border_color = COLORS["BORDER"]
+        bg_color = COLORS["GOLD_LIGHT"]
+    if left_accent is None:
+        left_accent = COLORS["GOLD"]
 
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(6)
-    p.paragraph_format.space_after = Pt(6)
+    # 创建1行2列表格：col1 (0.3cm gold) + col2 (light blue content)
+    table = doc.add_table(rows=1, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # 背景
-    _set_paragraph_shading(p, bg_color)
+    # 使用helper强制列宽和移除边框
+    _set_table_col_widths(table, [170, 8856])
+    _remove_table_borders(table)
 
-    # 左侧 accent（可选）
-    if left_accent:
-        _set_paragraph_border_left(p, left_accent, size=20, space=8)
-    else:
-        # 四周浅色边框
-        _set_paragraph_borders(p, border_color, size=4)
+    # col1: accent strip (0.3cm = 170 DXA)
+    cell_accent = table.cell(0, 0)
+    cell_accent.text = ""
+    _set_cell_shading(cell_accent, left_accent)
+    _set_cell_margins(cell_accent, top=80, bottom=80, left=0, right=0)
 
-    # 内缩进
-    pPr = p._element.get_or_add_pPr()
-    ind = parse_xml(f'<w:ind {nsdecls("w")} w:left="200" w:right="200"/>')
-    pPr.append(ind)
+    # col2: content area (8856 DXA)
+    cell_content = table.cell(0, 1)
+    cell_content.text = ""
+    _set_cell_shading(cell_content, bg_color)
+    _set_cell_margins(cell_content, top=80, bottom=80, left=120, right=120)
+
+    p = cell_content.paragraphs[0]
+    p.alignment = WD_ALIGN_PARAGRAPH.LEFT
 
     if runs:
         for r in runs:
@@ -338,46 +427,113 @@ def _add_highlight_box(doc, text, runs=None, bg_color=None, border_color=None, l
                      color=r.get("color", COLORS["TEXT"]))
     else:
         _add_run(p, text)
+    return table
+
+
+def _begin_content_block(doc, bg_color=None, left_accent=None):
+    """创建一个金色accent+暖金底色的内容容器，返回内容cell供调用方添加多段落。
+    用法：cell = _begin_content_block(doc); 然后向cell添加段落。
+    """
+    if bg_color is None:
+        bg_color = COLORS["GOLD_LIGHT"]
+    if left_accent is None:
+        left_accent = COLORS["GOLD"]
+
+    table = doc.add_table(rows=1, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _set_table_col_widths(table, [170, 8856])
+    _remove_table_borders(table)
+
+    cell_accent = table.cell(0, 0)
+    cell_accent.text = ""
+    _set_cell_shading(cell_accent, left_accent)
+    _set_cell_margins(cell_accent, top=80, bottom=80, left=0, right=0)
+
+    cell_content = table.cell(0, 1)
+    cell_content.text = ""
+    _set_cell_shading(cell_content, bg_color)
+    _set_cell_margins(cell_content, top=80, bottom=80, left=120, right=120)
+
+    # 清除默认空段落，由调用方自己添加
+    cell_content._element.remove(cell_content.paragraphs[0]._element)
+
+    return cell_content, table
+
+
+def _cell_add_body(cell, text, runs=None, space_after=9, bold=False):
+    """向cell中添加一段正文（类似 _add_body 但目标是cell而非doc）"""
+    p = cell.add_paragraph()
+    p.paragraph_format.space_after = Pt(space_after)
+    if runs:
+        for r in runs:
+            _add_run(p, r.get("text", ""),
+                     bold=r.get("bold", False),
+                     italic=r.get("italic", False),
+                     size=r.get("size", 12),
+                     color=r.get("color", COLORS["TEXT"]))
+    else:
+        _add_run(p, text, bold=bold)
     return p
 
 
 def _add_advantage_card(doc, title, body):
-    """添加方案亮点卡片样式：带深蓝左竖线 + 浅灰底纹"""
-    # 标题
-    p_title = doc.add_paragraph()
-    p_title.paragraph_format.space_before = Pt(10)
-    p_title.paragraph_format.space_after = Pt(2)
-    _set_paragraph_border_left(p_title, COLORS["NAVY"], size=20, space=8)
-    _set_paragraph_shading(p_title, COLORS["GRAY_LIGHT"])
-    pPr = p_title._element.get_or_add_pPr()
-    ind = parse_xml(f'<w:ind {nsdecls("w")} w:left="120" w:right="120"/>')
-    pPr.append(ind)
-    _add_run(p_title, f"  {title}", bold=True, size=13, color=COLORS["NAVY"])
+    """添加方案亮点卡片 - 使用表格设计：2行2列，gold accent + navy title / gray content"""
+    # 创建2行2列表格
+    table = doc.add_table(rows=2, cols=2)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
-    # 正文
-    p_body = doc.add_paragraph()
-    p_body.paragraph_format.space_after = Pt(8)
-    _set_paragraph_border_left(p_body, COLORS["NAVY"], size=20, space=8)
-    pPr2 = p_body._element.get_or_add_pPr()
-    ind2 = parse_xml(f'<w:ind {nsdecls("w")} w:left="120" w:right="120"/>')
-    pPr2.append(ind2)
-    _add_run(p_body, f"  {body}")
-    return p_title, p_body
+    # 使用helper强制列宽和移除边框
+    _set_table_col_widths(table, [170, 8856])
+    _remove_table_borders(table)
+
+    # Row 1: Title row
+    # col1: gold accent (170 DXA)
+    cell_accent_title = table.cell(0, 0)
+    cell_accent_title.text = ""
+    _set_cell_shading(cell_accent_title, COLORS["GOLD"])
+    _set_cell_margins(cell_accent_title, top=40, bottom=40, left=0, right=0)
+
+    # col2: navy title cell (8856 DXA)
+    cell_title = table.cell(0, 1)
+    cell_title.text = ""
+    _set_cell_shading(cell_title, COLORS["NAVY"])
+    _set_cell_margins(cell_title, top=60, bottom=60, left=100, right=100)
+
+    p_title = cell_title.paragraphs[0]
+    p_title.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _add_run(p_title, title, bold=True, size=13, color=COLORS["WHITE"])
+
+    # Row 2: Body row
+    # col1: gold accent (170 DXA)
+    cell_accent_body = table.cell(1, 0)
+    cell_accent_body.text = ""
+    _set_cell_shading(cell_accent_body, COLORS["GOLD"])
+    _set_cell_margins(cell_accent_body, top=40, bottom=40, left=0, right=0)
+
+    # col2: warm gold body cell (8856 DXA)
+    cell_body = table.cell(1, 1)
+    cell_body.text = ""
+    _set_cell_shading(cell_body, COLORS["GOLD_LIGHT"])
+    _set_cell_margins(cell_body, top=80, bottom=80, left=100, right=100)
+
+    p_body = cell_body.paragraphs[0]
+    p_body.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_body.paragraph_format.space_after = Pt(4)
+    _add_run(p_body, body)
+
+    # 不添加卡片间空段落，让相邻表格紧密排列（节省垂直空间）
+
+    return table
 
 
 def _add_step_item(doc, number, text):
-    """添加带编号圆形标记的步骤项"""
+    """添加步骤项 - 使用 ▸ 符号 + 编号的简洁列表样式"""
     p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(4)
-
-    # 数字编号（使用深蓝色加粗）
-    _add_run(p, f"  Step {number}  ", bold=True, size=11, color=COLORS["NAVY"])
-    # 竖线分隔
-    _add_run(p, "│  ", size=11, color=COLORS["GOLD"])
-    # 文字
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_before = Pt(3)
+    _add_run(p, "  ▸  ", bold=True, size=11, color=COLORS["GOLD"])
+    _add_run(p, f"{number}. ", bold=True, size=11, color=COLORS["NAVY"])
     _add_run(p, text, size=11)
-
-    _set_paragraph_shading(p, COLORS["GRAY_LIGHT"] if number % 2 == 1 else COLORS["WHITE"])
     return p
 
 
@@ -481,6 +637,9 @@ def generate_proposal(
     section.left_margin = Cm(2.54)
     section.right_margin = Cm(2.54)
 
+    # 页面边框已去除 — 内页底图自带金色装饰边框
+    sectPr = section._sectPr
+
     # 计算常用值
     total_premium = annual_premium * 5
     scale = annual_premium / 10000
@@ -506,76 +665,90 @@ def generate_proposal(
             education_withdrawal_year = None
 
     # ============================================================
-    # 模块 1：封面页（精装版）
+    # 模块 1：封面页（底图 + 叠加文字）
     # ============================================================
-    # 上方留白
-    for _ in range(2):
+
+    # --- 插入封面底图为浮动图片（behind text）---
+    if os.path.exists(COVER_BG_PATH):
+        # 添加一个空段落用于锚定图片
+        p_anchor = doc.add_paragraph()
+        p_anchor.paragraph_format.space_before = Pt(0)
+        p_anchor.paragraph_format.space_after = Pt(0)
+        run_img = p_anchor.add_run()
+
+        # 添加图片到 run（inline），然后转换为浮动（anchor）behind text
+        from docx.shared import Inches
+        inline_shape = run_img.add_picture(COVER_BG_PATH, width=Cm(21), height=Cm(29.7))
+
+        # 获取 inline XML 并转换为 anchor（behind text）
+        inline_elem = inline_shape._inline
+        # A4 page dimensions in EMU: 21cm x 29.7cm
+        page_w_emu = 7560000  # 21cm
+        page_h_emu = 10692000  # 29.7cm
+        # Margins in EMU: 2.54cm = 914400
+        margin_emu = 914400
+
+        # 创建 anchor XML（behind text, page-relative positioning）
+        anchor_xml = (
+            f'<wp:anchor distT="0" distB="0" distL="0" distR="0" '
+            f'simplePos="0" relativeHeight="0" behindDoc="1" locked="1" '
+            f'layoutInCell="1" allowOverlap="1" '
+            f'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            f'  <wp:simplePos x="0" y="0"/>'
+            f'  <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+            f'  <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>'
+            f'  <wp:extent cx="{page_w_emu}" cy="{page_h_emu}"/>'
+            f'  <wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            f'  <wp:wrapNone/>'
+            f'  <wp:docPr id="100" name="CoverBG"/>'
+        )
+        # 复制 inline 中的 graphic 节点
+        graphic = inline_elem.find(qn('a:graphic'))
+        anchor_elem = parse_xml(anchor_xml + '</wp:anchor>')
+        # 插入 graphic 到 anchor
+        anchor_elem.append(graphic)
+
+        # 替换 inline 为 anchor
+        drawing = inline_elem.getparent()
+        drawing.remove(inline_elem)
+        drawing.append(anchor_elem)
+
+    # 上方留白（将文字推到页面中部）
+    for _ in range(6):
         p = doc.add_paragraph()
         p.paragraph_format.space_before = Pt(20)
+        p.paragraph_format.space_after = Pt(0)
 
-    # 顶部金色装饰线
+    # AIA 品牌名
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    pPr = p._element.get_or_add_pPr()
-    pBdr = parse_xml(
-        f'<w:pBdr {nsdecls("w")}>'
-        f'  <w:top w:val="single" w:sz="18" w:space="6" w:color="{COLORS["GOLD"]}"/>'
-        f'  <w:bottom w:val="single" w:sz="4" w:space="6" w:color="{COLORS["GOLD"]}"/>'
-        f'</w:pBdr>'
-    )
-    pPr.append(pBdr)
-    _set_paragraph_shading(p, COLORS["NAVY"])
-    p.paragraph_format.space_before = Pt(30)
-    p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.space_after = Pt(8)
+    _add_run(p, "AIA 友邦保险", bold=True, size=16, color=COLORS["GOLD_DARK"])
 
-    # 深蓝底色 AIA 品牌名
-    _add_run(p, "AIA 友邦保险", bold=True, size=14, color=COLORS["GOLD"])
-
-    # 深蓝底 — 客户姓名（大字）
-    p2 = doc.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_paragraph_shading(p2, COLORS["NAVY"])
-    p2.paragraph_format.space_before = Pt(10)
-    p2.paragraph_format.space_after = Pt(0)
-    _add_run(p2, client_name, bold=True, size=32, color=COLORS["WHITE"])
-
-    # 深蓝底 — 副标题
-    p3 = doc.add_paragraph()
-    p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_paragraph_shading(p3, COLORS["NAVY"])
-    p3.paragraph_format.space_before = Pt(4)
-    p3.paragraph_format.space_after = Pt(0)
-    _add_run(p3, "个人财富管理方案", bold=False, size=18, color=COLORS["GOLD_LIGHT"])
-
-    # 深蓝底 — 底部金线
-    p4 = doc.add_paragraph()
-    p4.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_paragraph_shading(p4, COLORS["NAVY"])
-    p4.paragraph_format.space_before = Pt(6)
-    p4.paragraph_format.space_after = Pt(0)
-    pPr4 = p4._element.get_or_add_pPr()
-    pBdr4 = parse_xml(
-        f'<w:pBdr {nsdecls("w")}>'
-        f'  <w:bottom w:val="single" w:sz="18" w:space="6" w:color="{COLORS["GOLD"]}"/>'
-        f'</w:pBdr>'
-    )
-    pPr4.append(pBdr4)
-    _add_run(p4, " ", size=8, color=COLORS["NAVY"])
-
-    # 下方留白
+    # 客户姓名（大字，深色适配浅色底图）
     p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(40)
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(6)
+    _add_run(p, client_name, bold=True, size=36, color=COLORS["NAVY_DARK"])
+
+    # 副标题
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    p.paragraph_format.space_after = Pt(30)
+    _add_run(p, "个人财富管理方案", bold=False, size=20, color=COLORS["GOLD_DARK"])
 
     # 产品名
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(p, "环宇盈活储蓄保险计划", bold=True, size=13, color=COLORS["NAVY"])
+    _add_run(p, "环宇盈活储蓄保险计划", bold=True, size=14, color=COLORS["NAVY"])
     p.paragraph_format.space_after = Pt(2)
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _add_run(p, "GlobalFlexi Savings Insurance Plan", italic=True, size=10, color=COLORS["GRAY"])
-    p.paragraph_format.space_after = Pt(20)
+    _add_run(p, "GlobalFlexi Savings Insurance Plan", italic=True, size=11, color=COLORS["GRAY"])
+    p.paragraph_format.space_after = Pt(30)
 
     # 金色细分隔线
     _add_gold_divider(doc)
@@ -596,10 +769,49 @@ def generate_proposal(
     # ============================================================
     _add_page_break(doc)
 
-    # ---- 添加页眉（带底部金线） ----
+    # ---- 添加页眉（带底部金线 + 内页底图） ----
     header = section.header
     header.is_linked_to_previous = False
-    hp = header.paragraphs[0]
+
+    # 内页底图：添加为header中的浮动behind-text图片（每页自动重复）
+    if os.path.exists(INNER_BG_PATH):
+        from docx.shared import Inches
+        hp_bg = header.paragraphs[0]
+        hp_bg.paragraph_format.space_before = Pt(0)
+        hp_bg.paragraph_format.space_after = Pt(0)
+        run_inner = hp_bg.add_run()
+        inner_shape = run_inner.add_picture(INNER_BG_PATH, width=Cm(21), height=Cm(29.7))
+
+        # 转换 inline → anchor (behind text, page-relative)
+        inner_inline = inner_shape._inline
+        page_w_emu = 7560000
+        page_h_emu = 10692000
+
+        inner_anchor_xml = (
+            f'<wp:anchor distT="0" distB="0" distL="0" distR="0" '
+            f'simplePos="0" relativeHeight="0" behindDoc="1" locked="1" '
+            f'layoutInCell="1" allowOverlap="1" '
+            f'xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" '
+            f'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+            f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">'
+            f'  <wp:simplePos x="0" y="0"/>'
+            f'  <wp:positionH relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionH>'
+            f'  <wp:positionV relativeFrom="page"><wp:posOffset>0</wp:posOffset></wp:positionV>'
+            f'  <wp:extent cx="{page_w_emu}" cy="{page_h_emu}"/>'
+            f'  <wp:effectExtent l="0" t="0" r="0" b="0"/>'
+            f'  <wp:wrapNone/>'
+            f'  <wp:docPr id="200" name="InnerBG"/>'
+        )
+        inner_graphic = inner_inline.find(qn('a:graphic'))
+        inner_anchor_elem = parse_xml(inner_anchor_xml + '</wp:anchor>')
+        inner_anchor_elem.append(inner_graphic)
+
+        inner_drawing = inner_inline.getparent()
+        inner_drawing.remove(inner_inline)
+        inner_drawing.append(inner_anchor_elem)
+
+    # 页眉文字（新段落）
+    hp = header.add_paragraph()
     hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     hpPr = hp._element.get_or_add_pPr()
     hpBdr = parse_xml(
@@ -625,7 +837,9 @@ def generate_proposal(
     # ============================================================
     _add_styled_heading(doc, "您的财富守护者 — AIA友邦保险")
 
-    _add_body(doc, "", runs=[
+    cell_aia, _ = _begin_content_block(doc)
+
+    _cell_add_body(cell_aia, "", runs=[
         {"text": "把积蓄交给一家保险公司，最重要的是什么？是这家公司经得起时间的考验。友邦保险"},
         {"text": "创立于1919年", "bold": True},
         {"text": "，跨越了两次世界大战、多次金融危机，至今已稳健运营超过"},
@@ -633,7 +847,7 @@ def generate_proposal(
         {"text": "。它不仅是亚太地区最大的独立上市人寿保险集团，更是全球保险业的标杆。"},
     ])
 
-    _add_body(doc, "", runs=[
+    _cell_add_body(cell_aia, "", runs=[
         {"text": "顶级信用评级，三大机构一致认可：", "bold": True},
         {"text": "标准普尔 "},
         {"text": "AA（稳定）", "bold": True},
@@ -644,7 +858,7 @@ def generate_proposal(
         {"text": "。在全球保险公司中，能同时获得三大评级机构AA级认可的屈指可数，友邦便是其中之一。"},
     ])
 
-    _add_body(doc, "", runs=[
+    _cell_add_body(cell_aia, "", runs=[
         {"text": "强大的资产管理实力：", "bold": True},
         {"text": "集团总投资规模达"},
         {"text": "3,092亿美元", "bold": True},
@@ -653,7 +867,7 @@ def generate_proposal(
         {"text": "，辅以全球股票、投资物业等多元配置。这种「稳健为主、增长为辅」的投资策略，正是友邦保单长期分红稳定的底层保障。"},
     ])
 
-    _add_body(doc, "", runs=[
+    _cell_add_body(cell_aia, "", runs=[
         {"text": "持续增长的业务表现：", "bold": True},
         {"text": "2025年第三季度新业务价值上升25%至"},
         {"text": "14.76亿美元，创历史新高", "bold": True},
@@ -688,7 +902,7 @@ def generate_proposal(
         bg_parts.append(f"核心需求：{client_needs}")
 
     bg_text = "。".join(bg_parts) + "。"
-    _add_body(doc, bg_text, space_after=12)
+    _add_highlight_box(doc, bg_text)
 
     # ============================================================
     # 模块 4：需求分析（根据客户核心需求动态生成）
@@ -697,40 +911,43 @@ def generate_proposal(
 
     needs_lower = client_needs.lower() if client_needs else ""
 
+    # 需求分析内容放入暖金容器
+    cell_needs, _ = _begin_content_block(doc)
+
     # --- 动态开头段落（优先按核心需求关键词，退休作为兜底） ---
     if primary_need == "education":
         child_info = f"作为{client_family}的家长，" if client_family else ""
         if child_current_age is not None and child_target_age is not None:
             years_until = child_target_age - child_current_age
-            _add_body(doc, "", runs=[
+            _cell_add_body(cell_needs, "", runs=[
                 {"text": f"{child_info}{client_name}深知教育投资对下一代的重要性。孩子目前{child_current_age}岁，距离{child_target_age}岁的关键教育节点还有"},
                 {"text": f"整整{years_until}年", "bold": True},
                 {"text": "。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。"},
             ])
         else:
-            _add_body(doc, f"{child_info}{client_name}深知教育投资对下一代的重要性。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。")
+            _cell_add_body(cell_needs, f"{child_info}{client_name}深知教育投资对下一代的重要性。在优质教育资源日益稀缺、国际学校和海外留学费用持续攀升的今天，提前做好教育金规划，是给孩子最有远见的礼物。")
     elif primary_need == "inheritance":
-        _add_body(doc, f"财富的意义不仅在于当下的享有，更在于跨代的传递。{client_name}正处于事业与家庭的成熟期，此时开始规划财富传承，既有充裕的时间让资产增值，也能从容安排分配方案，确保财富按照您的心意惠及后代。")
+        _cell_add_body(cell_needs, f"财富的意义不仅在于当下的享有，更在于跨代的传递。{client_name}正处于事业与家庭的成熟期，此时开始规划财富传承，既有充裕的时间让资产增值，也能从容安排分配方案，确保财富按照您的心意惠及后代。")
     elif primary_need == "asset_isolation":
-        _add_body(doc, f"在当前复杂的经济与法律环境下，个人资产的安全性不容忽视。{client_name}希望通过合理的金融工具实现资产隔离与保全，这是极具前瞻性的财务决策。香港保险作为境外合法金融资产，在资产保全方面具有独特的制度优势。")
+        _cell_add_body(cell_needs, f"在当前复杂的经济与法律环境下，个人资产的安全性不容忽视。{client_name}希望通过合理的金融工具实现资产隔离与保全，这是极具前瞻性的财务决策。香港保险作为境外合法金融资产，在资产保全方面具有独特的制度优势。")
     elif primary_need == "growth":
-        _add_body(doc, f"在全球低利率与通胀并存的环境下，{client_name}正在寻找一种兼具安全性与增长性的储蓄方式。传统银行存款收益持续走低，而股市波动又让人难以安心。如何让辛苦积累的财富稳健增值，是当下最迫切的命题。")
+        _cell_add_body(cell_needs, f"在全球低利率与通胀并存的环境下，{client_name}正在寻找一种兼具安全性与增长性的储蓄方式。传统银行存款收益持续走低，而股市波动又让人难以安心。如何让辛苦积累的财富稳健增值，是当下最迫切的命题。")
     elif primary_need == "retirement" and retirement_year:
-        _add_body(doc, "", runs=[
+        _cell_add_body(cell_needs, "", runs=[
             {"text": f"{client_age}岁到{retirement_age}岁，这是{client_name}规划退休的"},
             {"text": f"黄金窗口期——整整{retirement_year}年", "bold": True},
             {"text": "。在这段时间里，收入处于职业生涯的高峰，储蓄能力最强；而足够的时间也能让一笔合理的投入通过复利实现显著增值。"},
         ])
     elif retirement_year:
-        _add_body(doc, "", runs=[
+        _cell_add_body(cell_needs, "", runs=[
             {"text": f"{client_age}岁到{retirement_age}岁，这是{client_name}规划退休的"},
             {"text": f"黄金窗口期——整整{retirement_year}年", "bold": True},
             {"text": "。在这段时间里，收入处于职业生涯的高峰，储蓄能力最强；而足够的时间也能让一笔合理的投入通过复利实现显著增值。"},
         ])
     else:
-        _add_body(doc, f"基于对{client_name}个人情况的深入了解，我们对您当前的财务状况和未来规划需求进行了全面分析，以确保推荐的方案真正契合您的期望与目标。")
+        _cell_add_body(cell_needs, f"基于对{client_name}个人情况的深入了解，我们对您当前的财务状况和未来规划需求进行了全面分析，以确保推荐的方案真正契合您的期望与目标。")
 
-    _add_body(doc, "", runs=[
+    _cell_add_body(cell_needs, "", runs=[
         {"text": "我们为您识别了以下核心规划要点：", "bold": True},
     ])
 
@@ -785,8 +1002,11 @@ def generate_proposal(
         ]
 
     for i, (prefix, body) in enumerate(need_items):
-        sa = 12 if i == len(need_items) - 1 else None
-        _add_numbered_item(doc, body, bold_prefix=f"{i+1}. {prefix}", space_after=sa)
+        p = cell_needs.add_paragraph()
+        if i == len(need_items) - 1:
+            p.paragraph_format.space_after = Pt(12)
+        _add_run(p, f"{i+1}. {prefix}", bold=True)
+        _add_run(p, body)
 
     # --- 动态衔接语 ---
     matched_advantages = []
@@ -805,7 +1025,7 @@ def generate_proposal(
     else:
         full_advantages = base_advantages + "、灵活提取匹配人生节奏、保单分拆和传承功能为未来预留充分弹性"
 
-    _add_body(doc, f"基于以上分析，我们为您推荐友邦保险最新一代储蓄计划——环宇盈活储蓄保险计划。它的设计理念与您的需求高度吻合：{full_advantages}。", space_after=12)
+    _cell_add_body(cell_needs, f"基于以上分析，我们为您推荐友邦保险最新一代储蓄计划——环宇盈活储蓄保险计划。它的设计理念与您的需求高度吻合：{full_advantages}。", space_after=12)
 
     _add_page_break(doc)
 
@@ -816,7 +1036,7 @@ def generate_proposal(
 
     product_name = "环宇盈活储蓄保险计划（GlobalFlexi Savings Insurance Plan）"
 
-    # 方案概览信息框 —— 使用浅蓝底纹 + 左侧深蓝竖线
+    # 方案概览信息 —— 使用表格设计：5行2列，gold accent + light blue content
     overview_items = [
         f"推荐产品：{product_name}",
         "缴费年期：5年",
@@ -824,16 +1044,30 @@ def generate_proposal(
         f"总  保  费：{format_usd(total_premium)} 美元",
         "保单货币：美元",
     ]
-    for item in overview_items:
-        p = doc.add_paragraph()
-        p.paragraph_format.space_after = Pt(2)
-        p.paragraph_format.space_before = Pt(2)
-        _set_paragraph_shading(p, COLORS["NAVY_LIGHT"])
-        _set_paragraph_border_left(p, COLORS["NAVY"], size=16, space=8)
-        pPr = p._element.get_or_add_pPr()
-        ind = parse_xml(f'<w:ind {nsdecls("w")} w:left="120"/>')
-        pPr.append(ind)
-        _add_run(p, f"  {item}", bold=True, size=11, color=COLORS["NAVY"])
+
+    overview_table = doc.add_table(rows=len(overview_items), cols=2)
+    overview_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+
+    # 使用helper强制列宽和移除边框
+    _set_table_col_widths(overview_table, [170, 8856])
+    _remove_table_borders(overview_table)
+
+    for row_idx, item in enumerate(overview_items):
+        # col1: gold accent (170 DXA)
+        cell_accent = overview_table.cell(row_idx, 0)
+        cell_accent.text = ""
+        _set_cell_shading(cell_accent, COLORS["GOLD"])
+        _set_cell_margins(cell_accent, top=40, bottom=40, left=0, right=0)
+
+        # col2: warm gold content (8856 DXA)
+        cell_content = overview_table.cell(row_idx, 1)
+        cell_content.text = ""
+        _set_cell_shading(cell_content, COLORS["GOLD_LIGHT"])
+        _set_cell_margins(cell_content, top=50, bottom=50, left=100, right=100)
+
+        p = cell_content.paragraphs[0]
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+        _add_run(p, item, bold=True, size=11, color=COLORS["NAVY"])
 
     # 概要描述
     year10_total = round(BASE_TOTAL_SURRENDER[10] * scale)
@@ -889,8 +1123,9 @@ def generate_proposal(
 
     col_w = 1805
     headers = ["保单年度", "已缴总保费", "保证现金价值", "非保证红利", "预期总价值"]
+    _compact = Pt(4)  # 段后4磅，压缩表格行高
     for i, h in enumerate(headers):
-        _create_header_cell(table, 0, i, h, col_w)
+        _create_header_cell(table, 0, i, h, col_w, space_after=_compact)
 
     for row_idx, row_data in enumerate(benefit_data):
         fill = COLORS["ROW_ALT_1"] if row_idx % 2 == 0 else COLORS["ROW_ALT_2"]
@@ -901,11 +1136,11 @@ def generate_proposal(
         elif retirement_year and row_data['year'] == retirement_year:
             year_label += f"\n({retirement_age}岁)"
 
-        _create_data_cell(table, row_idx + 1, 0, year_label, col_w, fill, bold=is_bold, align="center")
-        _create_data_cell(table, row_idx + 1, 1, format_usd(row_data['premium_paid']), col_w, fill)
-        _create_data_cell(table, row_idx + 1, 2, format_usd(row_data['guaranteed_cv']), col_w, fill)
-        _create_data_cell(table, row_idx + 1, 3, format_usd(row_data['non_guaranteed_bonus']), col_w, fill)
-        _create_data_cell(table, row_idx + 1, 4, format_usd(row_data['total_value']), col_w, fill)
+        _create_data_cell(table, row_idx + 1, 0, year_label, col_w, fill, bold=is_bold, align="center", space_after=_compact)
+        _create_data_cell(table, row_idx + 1, 1, format_usd(row_data['premium_paid']), col_w, fill, space_after=_compact)
+        _create_data_cell(table, row_idx + 1, 2, format_usd(row_data['guaranteed_cv']), col_w, fill, space_after=_compact)
+        _create_data_cell(table, row_idx + 1, 3, format_usd(row_data['non_guaranteed_bonus']), col_w, fill, space_after=_compact)
+        _create_data_cell(table, row_idx + 1, 4, format_usd(row_data['total_value']), col_w, fill, space_after=_compact)
 
     # 收益点评
     year50_total = round(BASE_TOTAL_SURRENDER[50] * scale)
@@ -970,26 +1205,16 @@ def generate_proposal(
             {"text": "单位：美元（基于预期投资回报率演示，非保证）", "italic": True, "size": 10},
         ], space_after=6)
 
-        # 选择展示的关键年份
+        # 选择展示的关键年份：起始年 + 每10年 + 第100年
         all_proj = withdrawal_result["projections"]
         show_years_set = set()
         show_years_set.add(withdrawal_start_year)  # 起始年
-        # 每隔5年/10年选一些
         for p in all_proj:
             y = p["year"]
-            if y % 5 == 0 or y == 100:
+            if y % 10 == 0 or y == 100:
                 show_years_set.add(y)
-        # 确保包含100
         show_years_set.add(100)
         show_years = sorted(show_years_set)
-
-        # 限制展示行数 (最多 ~12行)
-        if len(show_years) > 12:
-            essential = [withdrawal_start_year, 100]
-            remaining = [y for y in show_years if y not in essential]
-            step = max(1, len(remaining) // 10)
-            selected = remaining[::step]
-            show_years = sorted(set(essential + selected))
 
         proj_dict = {p["year"]: p["balance"] for p in all_proj}
 
@@ -998,18 +1223,19 @@ def generate_proposal(
         w_table.alignment = WD_TABLE_ALIGNMENT.CENTER
         w_col = 2256
         w_headers = ["保单年度", f"{client_name}年龄", "年提取金额", "提取后剩余价值"]
+        _compact = Pt(4)  # 段后4磅
         for i, h in enumerate(w_headers):
-            _create_header_cell(w_table, 0, i, h, w_col)
+            _create_header_cell(w_table, 0, i, h, w_col, space_after=_compact)
 
         for row_idx, y in enumerate(show_years):
             fill = COLORS["ROW_ALT_1"] if row_idx % 2 == 0 else COLORS["ROW_ALT_2"]
             age_at_year = client_age + y
             balance = proj_dict.get(y, 0)
 
-            _create_data_cell(w_table, row_idx + 1, 0, f"第{y}年", w_col, fill, align="center")
-            _create_data_cell(w_table, row_idx + 1, 1, f"{age_at_year}岁", w_col, fill, align="center")
-            _create_data_cell(w_table, row_idx + 1, 2, format_usd(annual_w), w_col, fill)
-            _create_data_cell(w_table, row_idx + 1, 3, format_usd(balance), w_col, fill, bold=(row_idx == 0))
+            _create_data_cell(w_table, row_idx + 1, 0, f"第{y}年", w_col, fill, align="center", space_after=_compact)
+            _create_data_cell(w_table, row_idx + 1, 1, f"{age_at_year}岁", w_col, fill, align="center", space_after=_compact)
+            _create_data_cell(w_table, row_idx + 1, 2, format_usd(annual_w), w_col, fill, space_after=_compact)
+            _create_data_cell(w_table, row_idx + 1, 3, format_usd(balance), w_col, fill, bold=(row_idx == 0), space_after=_compact)
 
         # 计算累计提取
         total_withdrawn = annual_w * (100 - withdrawal_start_year + 1)
@@ -1069,11 +1295,12 @@ def generate_proposal(
     # ============================================================
     _add_styled_heading(doc, "投保流程与注意事项")
 
-    _add_body(doc, "一切准备就绪，接下来只需简单几步，即可开启您的财富管理新篇章。")
+    _add_highlight_box(doc, "一切准备就绪，接下来只需简单几步，即可开启您的财富管理新篇章。")
 
     # 赴港投保流程 — 子标题
     _add_styled_heading(doc, "赴港投保流程", level=2)
 
+    cell_steps, _ = _begin_content_block(doc)
     step_texts = [
         "预约赴港投保时间，我们将为您安排专属接待",
         "携带所需文件前往友邦服务中心（尖沙咀海港城/中环友邦中心）",
@@ -1081,14 +1308,20 @@ def generate_proposal(
         "保单审批通过后正式生效，通常3-5个工作日",
     ]
     for i, s in enumerate(step_texts):
-        _add_step_item(doc, i + 1, s)
+        p = cell_steps.add_paragraph()
+        p.paragraph_format.space_after = Pt(6)
+        p.paragraph_format.space_before = Pt(3)
+        _add_run(p, "  ▸  ", bold=True, size=11, color=COLORS["GOLD"])
+        _add_run(p, f"{i+1}. ", bold=True, size=11, color=COLORS["NAVY"])
+        _add_run(p, s, size=11)
 
     # 所需文件
     _add_styled_heading(doc, "所需文件", level=2)
 
+    cell_docs, _ = _begin_content_block(doc)
     docs_needed = ["港澳通行证（有效期内）", "中国居民身份证", "入境小票（过关时请务必保留）"]
     for d in docs_needed:
-        p = doc.add_paragraph()
+        p = cell_docs.add_paragraph()
         p.paragraph_format.space_after = Pt(3)
         _add_run(p, "  ▸  ", bold=True, size=10, color=COLORS["GOLD"])
         _add_run(p, d, size=11)
@@ -1096,13 +1329,12 @@ def generate_proposal(
     # 缴费方式
     _add_styled_heading(doc, "缴费方式", level=2)
 
-    _add_body(doc, "支持现金、信用卡（Visa/Mastercard）、银行电汇、香港银行本票、香港银行支票等多种缴费方式，灵活便捷。首期保费可在签约当日以信用卡支付，后续保费可通过银行转账安排自动缴付。", space_after=10)
+    _add_highlight_box(doc, "支持现金、信用卡（Visa/Mastercard）、银行电汇、香港银行本票、香港银行支票等多种缴费方式，灵活便捷。首期保费可在签约当日以信用卡支付，后续保费可通过银行转账安排自动缴付。")
 
     # 后续服务
     _add_styled_heading(doc, "后续服务", level=2)
 
-    _add_highlight_box(doc, "投保完成后，您将享有专属客户经理全程服务，包括保单年度检视、保单分拆与货币转换协助、提取与理赔支持、受益人变更等全方位管理。无论您身在内地还是海外，我们都确保您的保单服务畅通无阻。",
-                       bg_color=COLORS["GOLD_LIGHT"], left_accent=COLORS["GOLD"])
+    _add_highlight_box(doc, "投保完成后，您将享有专属客户经理全程服务，包括保单年度检视、保单分拆与货币转换协助、提取与理赔支持、受益人变更等全方位管理。无论您身在内地还是海外，我们都确保您的保单服务畅通无阻。")
 
     # ============================================================
     # 输出

@@ -1311,7 +1311,7 @@ def generate_proposal(
     p3.paragraph_format.space_after = Pt(6)
     _add_run(p3, "凭借扎实的金融专业功底、多元的国际视野和对内地客户需求的深刻理解，团队致力于为每一位客户量身定制最优方案，让财富管理真正成为一件专业、安心、高效的事。", size=12)
 
-    # 高校Logo网格 — 用段落内联图片方式，每行排列 logo+校名
+    # 高校Logo网格 — 表格单元格方式，每个 logo+校名 在同一个单元格内
     _add_styled_heading(doc, "团队成员院校背景", level=2)
 
     logos_dir = os.path.join(os.path.dirname(__file__), "logos")
@@ -1327,6 +1327,7 @@ def generate_proposal(
 
     logo_size = Cm(1.5)
     cols_per_row = 5
+    n_rows = (len(logo_files) + cols_per_row - 1) // cols_per_row
 
     from PIL import Image as PILImage, ImageFile as PILImageFile
     PILImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -1335,14 +1336,12 @@ def generate_proposal(
         """用 PIL 加载图片并返回干净的 PNG BytesIO"""
         pil_img = PILImage.open(fpath)
         pil_img.load()
-        # 转为 RGB 白底
         if pil_img.mode == "RGBA":
             bg = PILImage.new("RGB", pil_img.size, (255, 255, 255))
             bg.paste(pil_img, mask=pil_img.split()[3])
             pil_img = bg
         elif pil_img.mode != "RGB":
             pil_img = pil_img.convert("RGB")
-        # 等比缩放居中到正方形
         pil_img.thumbnail((200, 200), PILImage.LANCZOS)
         canvas = PILImage.new("RGB", (200, 200), (255, 255, 255))
         offset = ((200 - pil_img.width) // 2, (200 - pil_img.height) // 2)
@@ -1352,43 +1351,45 @@ def generate_proposal(
         buf.seek(0)
         return buf
 
-    # 每行一个段落，包含5个 logo 图片，图片之间用空格分隔
-    for row_start in range(0, len(logo_files), cols_per_row):
-        row_items = logo_files[row_start:row_start + cols_per_row]
+    # 每个单元格放 logo 图片 + 校名，logo 和校名紧贴
+    logo_table = doc.add_table(rows=n_rows, cols=cols_per_row)
+    logo_table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    _remove_table_borders(logo_table)
 
-        # 图片行
-        p_logos = doc.add_paragraph()
-        p_logos.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_logos.paragraph_format.space_before = Pt(8)
-        p_logos.paragraph_format.space_after = Pt(2)
+    col_w = 9026 // cols_per_row
+    _set_table_col_widths(logo_table, [col_w] * cols_per_row)
 
-        for i, (fname, label) in enumerate(row_items):
-            logo_path = os.path.join(logos_dir, f"{fname}.png")
-            if os.path.exists(logo_path):
-                try:
-                    logo_buf = _prepare_logo(logo_path)
-                    run = p_logos.add_run()
-                    run.add_picture(logo_buf, width=logo_size, height=logo_size)
-                except Exception:
-                    p_logos.add_run("  ⬜  ")
-            else:
-                p_logos.add_run("  ⬜  ")
-            # logo 之间加间距
-            if i < len(row_items) - 1:
-                p_logos.add_run("    ")
+    for idx, (fname, label) in enumerate(logo_files):
+        row = idx // cols_per_row
+        col = idx % cols_per_row
 
-        # 校名行
-        p_names = doc.add_paragraph()
-        p_names.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        p_names.paragraph_format.space_before = Pt(0)
-        p_names.paragraph_format.space_after = Pt(4)
-        for i, (fname, label) in enumerate(row_items):
-            run_name = p_names.add_run(label)
-            run_name.font.size = Pt(8)
-            run_name.font.color.rgb = _rgb(COLORS["GRAY"])
-            run_name.font.name = "Microsoft YaHei"
-            if i < len(row_items) - 1:
-                p_names.add_run("        ")  # 校名间距
+        cell = logo_table.cell(row, col)
+        cell.text = ""
+        # 单元格垂直居底，让 logo 和校名自然紧贴
+        tc_pr = cell._tc.get_or_add_tcPr()
+        tc_pr.append(parse_xml(f'<w:vAlign {nsdecls("w")} w:val="bottom"/>'))
+
+        # Logo 图片段落
+        p_img = cell.paragraphs[0]
+        p_img.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_img.paragraph_format.space_before = Pt(6)
+        p_img.paragraph_format.space_after = Pt(2)
+
+        logo_path = os.path.join(logos_dir, f"{fname}.png")
+        if os.path.exists(logo_path):
+            try:
+                logo_buf = _prepare_logo(logo_path)
+                run_img = p_img.add_run()
+                run_img.add_picture(logo_buf, width=logo_size, height=logo_size)
+            except Exception:
+                pass
+
+        # 校名段落（同一个单元格内）
+        p_name = cell.add_paragraph()
+        p_name.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_name.paragraph_format.space_before = Pt(2)
+        p_name.paragraph_format.space_after = Pt(4)
+        _add_run(p_name, label, size=8, color=COLORS["GRAY"])
 
     _add_page_break(doc)
 

@@ -1280,7 +1280,7 @@ def generate_proposal(
         ("灵活提取，完美匹配退休节奏",
          "保单在缴费期满后即可灵活提取。金额和频率完全由您决定——不需要的年份可暂停提取让资金继续增值，需要大额支出时也可一次性提取更多。这种灵活性是银行定期存款和年金产品无法比拟的。"),
         ("保单分拆与传承，为未来预留无限可能",
-         "环宇盈活支持保单分拆功能——未来您可以将一份保单拆分为多份，灵活安排不同用途。同时，保单可指定受益人，实现财富的定向传承。"),
+         "环宇盈活支持保单分拆功能——未来您可以将一份保单拆分为多份，灵活安排不同用途。同时，保单可转换投保人和受保人，实现财富的定向传承。"),
         ("友邦百年品牌，偿付能力远超行业标准",
          "友邦保险以超过100年的历史、三大评级机构一致AA级认可、254%的资本覆盖率（远超监管要求），以及360万香港客户的共同选择，给您最坚实的信心保障。"),
     ]
@@ -1291,7 +1291,109 @@ def generate_proposal(
     _add_page_break(doc)
 
     # ============================================================
-    # 模块 9：投保流程与注意事项（固定内容）
+    # 模块 9：团队介绍（原模块10，移至投保流程之前）
+    # ============================================================
+    _add_styled_heading(doc, "您的专属团队 — 友邦旗舰财富管理团队")
+
+    # 团队介绍正文
+    cell_team, _ = _begin_content_block(doc)
+
+    p1 = cell_team.add_paragraph()
+    p1.paragraph_format.space_after = Pt(6)
+    _add_run(p1, "友邦旗舰财富管理团队", bold=True, size=12, color=COLORS["NAVY"])
+    _add_run(p1, "是友邦保险体系内的精英专业化团队，专注于为高净值客户提供跨境资产配置、财富传承及全生命周期的财务规划服务。", size=12)
+
+    p2 = cell_team.add_paragraph()
+    p2.paragraph_format.space_after = Pt(6)
+    _add_run(p2, "团队成员均来自环球顶尖QS高校，汇聚了清华大学、北京大学、复旦大学、上海交通大学、中国人民大学、华中科技大学、武汉大学、哈尔滨工业大学、中南大学、中山大学，以及香港大学、香港中文大学、香港科技大学等香港八大高校的优秀人才。", size=12)
+
+    p3 = cell_team.add_paragraph()
+    p3.paragraph_format.space_after = Pt(6)
+    _add_run(p3, "凭借扎实的金融专业功底、多元的国际视野和对内地客户需求的深刻理解，团队致力于为每一位客户量身定制最优方案，让财富管理真正成为一件专业、安心、高效的事。", size=12)
+
+    # 高校Logo网格 — 用段落内联图片方式，每行排列 logo+校名
+    _add_styled_heading(doc, "团队成员院校背景", level=2)
+
+    logos_dir = os.path.join(os.path.dirname(__file__), "logos")
+    logo_files = [
+        ("tsinghua", "清华大学"), ("peking", "北京大学"), ("fudan", "复旦大学"),
+        ("sjtu", "上海交通大学"), ("ruc", "中国人民大学"),
+        ("hust", "华中科技大学"), ("whu", "武汉大学"), ("hit", "哈尔滨工业大学"),
+        ("csu", "中南大学"), ("sysu", "中山大学"),
+        ("hku", "香港大学"), ("cuhk", "香港中文大学"), ("hkust", "香港科技大学"),
+        ("polyu", "香港理工大学"), ("cityu", "香港城市大学"),
+        ("hkbu", "香港浸会大学"), ("lingnan", "岭南大学"), ("eduhk", "香港教育大学"),
+    ]
+
+    logo_size = Cm(1.5)
+    cols_per_row = 5
+
+    from PIL import Image as PILImage, ImageFile as PILImageFile
+    PILImageFile.LOAD_TRUNCATED_IMAGES = True
+
+    def _prepare_logo(fpath):
+        """用 PIL 加载图片并返回干净的 PNG BytesIO"""
+        pil_img = PILImage.open(fpath)
+        pil_img.load()
+        # 转为 RGB 白底
+        if pil_img.mode == "RGBA":
+            bg = PILImage.new("RGB", pil_img.size, (255, 255, 255))
+            bg.paste(pil_img, mask=pil_img.split()[3])
+            pil_img = bg
+        elif pil_img.mode != "RGB":
+            pil_img = pil_img.convert("RGB")
+        # 等比缩放居中到正方形
+        pil_img.thumbnail((200, 200), PILImage.LANCZOS)
+        canvas = PILImage.new("RGB", (200, 200), (255, 255, 255))
+        offset = ((200 - pil_img.width) // 2, (200 - pil_img.height) // 2)
+        canvas.paste(pil_img, offset)
+        buf = io.BytesIO()
+        canvas.save(buf, format="PNG")
+        buf.seek(0)
+        return buf
+
+    # 每行一个段落，包含5个 logo 图片，图片之间用空格分隔
+    for row_start in range(0, len(logo_files), cols_per_row):
+        row_items = logo_files[row_start:row_start + cols_per_row]
+
+        # 图片行
+        p_logos = doc.add_paragraph()
+        p_logos.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_logos.paragraph_format.space_before = Pt(8)
+        p_logos.paragraph_format.space_after = Pt(2)
+
+        for i, (fname, label) in enumerate(row_items):
+            logo_path = os.path.join(logos_dir, f"{fname}.png")
+            if os.path.exists(logo_path):
+                try:
+                    logo_buf = _prepare_logo(logo_path)
+                    run = p_logos.add_run()
+                    run.add_picture(logo_buf, width=logo_size, height=logo_size)
+                except Exception:
+                    p_logos.add_run("  ⬜  ")
+            else:
+                p_logos.add_run("  ⬜  ")
+            # logo 之间加间距
+            if i < len(row_items) - 1:
+                p_logos.add_run("    ")
+
+        # 校名行
+        p_names = doc.add_paragraph()
+        p_names.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_names.paragraph_format.space_before = Pt(0)
+        p_names.paragraph_format.space_after = Pt(4)
+        for i, (fname, label) in enumerate(row_items):
+            run_name = p_names.add_run(label)
+            run_name.font.size = Pt(8)
+            run_name.font.color.rgb = _rgb(COLORS["GRAY"])
+            run_name.font.name = "Microsoft YaHei"
+            if i < len(row_items) - 1:
+                p_names.add_run("        ")  # 校名间距
+
+    _add_page_break(doc)
+
+    # ============================================================
+    # 模块 10：投保流程与注意事项（固定内容）
     # ============================================================
     _add_styled_heading(doc, "投保流程与注意事项")
 

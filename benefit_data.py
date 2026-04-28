@@ -92,19 +92,22 @@ def simulate_withdrawal(annual_premium: int, start_year: int, end_year: int = 10
     """
     计算固定提取后的年度余额模拟
     提取金额 = 开始提取年份的预期总价值 × 6.5%
+
+    模型：保单预期总价值按基准表持续增长，每年固定提取金额从中扣除。
+    即 balance(y) = BASE_TOTAL_SURRENDER[y] × scale − 累计提取总额
+    这是保险部分退保的标准演示方式。
     """
     scale = annual_premium / 10000
     start_value = round(BASE_TOTAL_SURRENDER[start_year] * scale)
     annual_withdrawal = round(start_value * 0.065)
 
-    balance = start_value
     projections = []
 
     for y in range(start_year, end_year + 1):
-        if y > start_year:
-            growth_rate = (BASE_TOTAL_SURRENDER[y] - BASE_TOTAL_SURRENDER[y - 1]) / BASE_TOTAL_SURRENDER[y - 1]
-            balance = balance * (1 + growth_rate)
-        balance -= annual_withdrawal
+        years_withdrawn = y - start_year + 1  # 含当年
+        cumulative = annual_withdrawal * years_withdrawn
+        projected_value = round(BASE_TOTAL_SURRENDER[y] * scale)
+        balance = projected_value - cumulative
         projections.append({"year": y, "balance": round(balance)})
 
     return {

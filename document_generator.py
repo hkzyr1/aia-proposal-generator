@@ -35,6 +35,7 @@ from benefit_data import (
     simulate_withdrawal,
     format_usd,
     BASE_TOTAL_SURRENDER,
+    WITHDRAWAL_RATE,
 )
 
 
@@ -1087,7 +1088,10 @@ def generate_proposal(
     elif retirement_year:
         ret_total = round(BASE_TOTAL_SURRENDER[retirement_year] * scale)
         ret_ratio = round(ret_total / total_premium, 2)
-        withdrawal_amt = round(ret_total * 0.065)
+        if retirement_year <= 7:
+            withdrawal_amt = round(total_premium * WITHDRAWAL_RATE)
+        else:
+            withdrawal_amt = round(ret_total * WITHDRAWAL_RATE)
         overview_text += (
             f"到您{retirement_age}岁时（第{retirement_year}年），预期总价值约{format_usd(ret_total)}美元，"
             f"约为初始投入的{ret_ratio}倍。"
@@ -1194,11 +1198,9 @@ def generate_proposal(
             goal_text = f"在您{client_age + withdrawal_start_year}岁时开始提取"
 
         _add_body(doc, "", runs=[
-            {"text": f"基于您{goal_text}的目标，我们按照"},
-            {"text": f"第{withdrawal_start_year}年预期总价值 × 6.5%", "bold": True},
-            {"text": f"的方式确定年提取金额，从第{withdrawal_start_year}年起每年固定提取"},
+            {"text": f"基于您{goal_text}的目标，参照AIA官方提取方案，从第{withdrawal_start_year}年起每年固定提取"},
             {"text": f"${format_usd(annual_w)}美元", "bold": True},
-            {"text": "，以下是提取后保单剩余价值的模拟："},
+            {"text": "，以下是提取演示："},
         ])
 
         _add_body(doc, "单位：美元（基于预期投资回报率演示，非保证）", runs=[
@@ -1216,13 +1218,13 @@ def generate_proposal(
         show_years_set.add(100)
         show_years = sorted(show_years_set)
 
-        proj_dict = {p["year"]: p["balance"] for p in all_proj}
+        proj_dict = {p["year"]: p for p in all_proj}
 
-        # 提取表格
-        w_table = doc.add_table(rows=len(show_years) + 1, cols=4)
+        # 提取表格（5列：年度、年龄、年提取、累计提取、剩余价值）
+        w_table = doc.add_table(rows=len(show_years) + 1, cols=5)
         w_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        w_col = 2256
-        w_headers = ["保单年度", f"{client_name}年龄", "年提取金额", "提取后剩余价值"]
+        w_col = 1810
+        w_headers = ["保单年度", f"{client_name}年龄", "年提取金额", "累计已提取", "剩余价值"]
         _compact = Pt(4)  # 段后4磅
         for i, h in enumerate(w_headers):
             _create_header_cell(w_table, 0, i, h, w_col, space_after=_compact)
@@ -1230,34 +1232,38 @@ def generate_proposal(
         for row_idx, y in enumerate(show_years):
             fill = COLORS["ROW_ALT_1"] if row_idx % 2 == 0 else COLORS["ROW_ALT_2"]
             age_at_year = client_age + y
-            balance = proj_dict.get(y, 0)
+            p = proj_dict.get(y, {})
+            cumulative = p.get("cumulative", 0)
+            remaining = p.get("remaining", 0)
 
             _create_data_cell(w_table, row_idx + 1, 0, f"第{y}年", w_col, fill, align="center", space_after=_compact)
             _create_data_cell(w_table, row_idx + 1, 1, f"{age_at_year}岁", w_col, fill, align="center", space_after=_compact)
             _create_data_cell(w_table, row_idx + 1, 2, format_usd(annual_w), w_col, fill, space_after=_compact)
-            _create_data_cell(w_table, row_idx + 1, 3, format_usd(balance), w_col, fill, bold=(row_idx == 0), space_after=_compact)
+            _create_data_cell(w_table, row_idx + 1, 3, format_usd(cumulative), w_col, fill, space_after=_compact)
+            _create_data_cell(w_table, row_idx + 1, 4, format_usd(remaining), w_col, fill, space_after=_compact)
 
-        # 计算累计提取
+        # 计算累计提取和第100年剩余价值
         total_withdrawn = annual_w * (100 - withdrawal_start_year + 1)
-        year100_balance = proj_dict.get(100, 0)
         total_withdrawn_ratio = round(total_withdrawn / total_premium, 1)
+        last_proj = proj_dict.get(100, {})
+        remaining_at_100 = last_proj.get("remaining", 0)
 
         withdraw_age_label = client_age + withdrawal_start_year
         if withdrawal_scenario == "education" and child_target_age is not None:
             start_desc = f"从孩子{child_target_age}岁（您{withdraw_age_label}岁）起"
-            tail_text = "，教育金提取完毕后，保单仍可继续作为退休储备或财富传承工具。"
+            tail_text = "教育金提取完毕后，保单仍可继续作为退休储备或财富传承工具。"
         else:
             start_desc = f"从您{withdraw_age_label}岁起"
-            tail_text = "，真正实现了「取之不尽」的终身现金流。"
+            tail_text = "提取期间保单仍持续增值，真正实现「取之不尽」的终身现金流。"
 
         _add_body(doc, "", runs=[
-            {"text": f"模拟数据显示，{start_desc}每年固定提取${format_usd(annual_w)}美元，"},
-            {"text": "保单剩余价值不仅不会缩水，反而持续增长", "bold": True},
-            {"text": f"。到第100年，剩余价值仍高达"},
-            {"text": f"${format_usd(year100_balance)}美元", "bold": True},
-            {"text": f"。期间累计提取总额达"},
+            {"text": f"根据AIA官方提取方案，{start_desc}每年固定提取"},
+            {"text": f"${format_usd(annual_w)}美元", "bold": True},
+            {"text": f"，到第100年累计提取总额达"},
             {"text": f"${format_usd(total_withdrawn)}美元（总投入的{total_withdrawn_ratio}倍）", "bold": True},
-            {"text": tail_text},
+            {"text": f"，同时保单剩余价值仍有"},
+            {"text": f"${format_usd(remaining_at_100)}美元", "bold": True},
+            {"text": f"。{tail_text}"},
         ], space_after=9)
 
         _add_body(doc, "", runs=[
